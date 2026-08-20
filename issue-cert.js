@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
+const readline = require('readline');
 const os = require('os');
 const path = require('path');
 const { ml_dsa87 } = require('@noble/post-quantum/ml-dsa.js');
@@ -28,6 +29,33 @@ function fromB64url(str) {
 
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest();
+}
+
+function promptHidden(promptText) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl._writeToOutput = function (s) {
+      if (rl.muted) rl.output.write('');
+      else rl.output.write(s);
+    };
+    rl.muted = false;
+    rl.question(promptText, (ans) => {
+      rl.output.write('\n');
+      rl.close();
+      resolve(ans.trim());
+    });
+    rl.muted = true;
+  });
+}
+
+function promptYesNo(promptText) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(promptText + ' (y/N) ', (ans) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(ans.trim()));
+    });
+  });
 }
 
 function seedInstructions() {
@@ -140,6 +168,60 @@ function parseFlags(argv) {
   return flags;
 }
 
+function parseInitFlags(argv) {
+  const flags = { seed: null, set: false, pass: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--seed') flags.seed = argv[++i];
+    else if (a === '--set') flags.set = true;
+    else if (a === '--pass') {
+      const v = argv[i + 1];
+      if (v !== undefined && !v.startsWith('--')) {
+        flags.pass = v;
+        i++;
+      } else {
+        flags.pass = true;
+      }
+    }
+  }
+  return flags;
+}
+
+const SEED_SALT = 'hardik-pandey.com/seed/v1';
+const SCRYPT_OPTS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+
+function seedFromPassword(password) {
+  return crypto.scryptSync(password, SEED_SALT, 32, SCRYPT_OPTS).toString('hex');
+}
+
+async function promptSeedHex(flags) {
+  const note = 'Note: password-derived seeds are weaker than a random 64-hex seed. Use a long passphrase and keep ~/.certify/master.seed private.';
+  if (flags.seed) return flags.seed;
+  if (typeof flags.pass === 'string') {
+    if (flags.pass.length < 12) throw new Error('Password must be at least 12 characters.');
+    console.log(note);
+    console.log('Deriving seed with scrypt (takes a moment)...');
+    return seedFromPassword(flags.pass);
+  }
+  if (!process.stdin.isTTY) {
+    throw new Error('Interactive input unavailable (not a TTY). Use --seed <64-hex> or --pass "<password>".');
+  }
+  const usePass = flags.pass === true || await promptYesNo('Derive your master seed from a password? (y = password, N = paste a 64-hex seed)');
+  if (usePass) {
+    const pw = await promptHidden('Master password (hidden): ');
+    if (!pw || pw.length < 12) throw new Error('Password must be at least 12 characters.');
+    const confirm = await promptHidden('Confirm password (hidden): ');
+    if (pw !== confirm) throw new Error('Passwords do not match.');
+    console.log(note);
+    console.log('Deriving seed with scrypt (takes a moment)...');
+    return seedFromPassword(pw);
+  }
+  const hex = await promptHidden('Paste your 64-hex master seed: ');
+  if (!hex) throw new Error('No seed provided.');
+  if (!/^[0-9a-f]{64}$/i.test(hex)) throw new Error('Invalid seed — expected exactly 64 hex chars (0-9, a-f).');
+  return hex;
+}
+
 function printCert(id, certJson, publishPath, keySource) {
   console.log('Certificate ID : ' + id);
   console.log('Signed with    : ' + keySource + ' key');
@@ -148,6 +230,32 @@ function printCert(id, certJson, publishPath, keySource) {
   console.log('');
   console.log('Cert JSON:');
   console.log(certJson);
+}
+
+async function cmdInit(argv) {
+  const flags = parseInitFlags(argv);
+  if (flags.seed && !/^[0-9a-f]{64}$/i.test(flags.seed)) {
+    throw new Error('Invalid --seed — expected exactly 64 hex chars (0-9, a-f).');
+  }
+  const exists = fs.existsSync(SEED_FILE) && /^[0-9a-f]{64}$/i.test(fs.readFileSync(SEED_FILE, 'utf8').trim());
+  if (exists && !flags.seed && !flags.set && flags.pass === null) {
+    if (!process.stdin.isTTY) {
+      console.log('Non-interactive session — keeping the existing seed. Running derive with it...');
+      cmdDerive();
+      return;
+    }
+    const ok = await promptYesNo('master.seed already exists — overwrite? Your identity changes and all previously issued certs become invalid.');
+    if (!ok) {
+      console.log('Keeping the existing seed. Running derive with it...');
+      cmdDerive();
+      return;
+    }
+  }
+  const hex = await promptSeedHex(flags);
+  fs.mkdirSync(KEY_DIR, { recursive: true });
+  fs.writeFileSync(SEED_FILE, hex + '\n', { mode: 0o600 });
+  console.log('Master seed written: ' + SEED_FILE);
+  cmdDerive();
 }
 
 function cmdDerive() {
@@ -200,24 +308,33 @@ function cmdVerify(flags) {
   process.exit(idOk && sigOk ? 0 : 1);
 }
 
-const cmd = process.argv[2];
-try {
-  if (cmd === 'init' || cmd === 'derive') cmdDerive();
-  else if (cmd === 'sign') cmdSign(parseFlags(process.argv.slice(3)));
-  else if (cmd === 'verify') cmdVerify(parseFlags(process.argv.slice(3)));
-  else {
-    console.log('Usage: node scripts/issue-cert.js <init|derive|sign|verify>');
-    console.log('');
-    console.log('  init | derive            Read ~/.certify/master.seed, derive the signing key,');
-    console.log('                            save ~/.certify/signing.key, publish certify/public-key.json');
-    console.log('  sign --subject --claim   Mint a certificate (prints JSON + verify URLs)');
-    console.log('      [--key derived|master]  Sign with the saved signing key (default) or re-derive from master');
-    console.log('      [--issuedAt YYYY-MM-DD]  Issue date (default: today)');
-    console.log('      [--publish]              Write certify/issued/<id>.json for the hosted short URL');
-    console.log('  verify --file <path>     Check a certificate JSON (id hash + signature)');
-    console.log('      | --data "<json>"');
+async function main() {
+  const cmd = process.argv[2];
+  try {
+    if (cmd === 'init') await cmdInit(process.argv.slice(3));
+    else if (cmd === 'derive') cmdDerive();
+    else if (cmd === 'sign') cmdSign(parseFlags(process.argv.slice(3)));
+    else if (cmd === 'verify') cmdVerify(parseFlags(process.argv.slice(3)));
+    else {
+      console.log('Usage: node issue-cert.js <init|derive|sign|verify>');
+      console.log('');
+      console.log('  init                     Set your master seed (interactive) and derive');
+      console.log('      [--seed <64-hex>]       Non-interactive: supply the raw seed directly');
+      console.log('      [--pass [<password>]]   Derive the seed from a password (scrypt); omit to prompt hidden');
+      console.log('      [--set]                 Overwrite an existing seed without confirmation');
+      console.log('  derive                   Read ~/.certify/master.seed, derive the signing key,');
+      console.log('                            save ~/.certify/signing.key, publish certify/public-key.json');
+      console.log('  sign --subject --claim   Mint a certificate (prints JSON + verify URLs)');
+      console.log('      [--key derived|master]  Sign with the saved signing key (default) or re-derive from master');
+      console.log('      [--issuedAt YYYY-MM-DD]  Issue date (default: today)');
+      console.log('      [--publish]              Write certify/issued/<id>.json for the hosted short URL');
+      console.log('  verify --file <path>     Check a certificate JSON (id hash + signature)');
+      console.log('      | --data "<json>"');
+    }
+  } catch (err) {
+    console.error('Error: ' + err.message);
+    process.exit(1);
   }
-} catch (err) {
-  console.error('Error: ' + err.message);
-  process.exit(1);
 }
+
+main();

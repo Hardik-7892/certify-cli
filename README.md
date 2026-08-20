@@ -22,33 +22,40 @@ bundles).
 
 ## Setup
 
-The master seed is **yours** — the CLI never generates it for you. Create it
-once in your own terminal and keep it private:
-
-```powershell
-$b = New-Object byte[] 32
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
--join ($b | ForEach-Object { $_.ToString('x2') })   # 64 hex chars — your master key
-Set-Content -Path "$env:USERPROFILE\.certify\master.seed" -Value "<those 64 hex chars>" -Encoding ascii -NoNewline
-```
-
-Then point the CLI at the site repo. Create a local `config.json` (gitignored)
-or set the `CERTIFY_DIR` environment variable:
+The master seed is **yours** — the CLI never generates it for you. Point the
+CLI at the site repo first: create a local `config.json` (gitignored) or set
+the `CERTIFY_DIR` environment variable:
 
 ```json
 { "certifyDir": "C:/path/to/Hardik-7892.github.io/certify" }
 ```
 
-Install dependencies and derive the keypair:
+Install dependencies, then run `init`. It will ask whether to derive your
+master seed from a password or paste a raw 64-hex seed. The password path
+(selected with `y`, or `--pass` non-interactively) derives the seed with
+**scrypt** (memory-hard, ~32 MB) so a password can't be brute-forced cheaply:
 
 ```sh
 npm install
-node issue-cert.js derive
+node issue-cert.js init          # interactive: y = password, N = paste 64-hex
+node issue-cert.js init --pass   # skip the choice, go straight to password prompt
+node issue-cert.js init --pass "<password>"   # non-interactive (lands in shell history — prefer the prompt)
 ```
 
-`derive` reads `~/.certify/master.seed`, derives the signing key, saves it to
-`~/.certify/signing.key`, and writes `certify/public-key.json` into the site
-repo. It is deterministic — re-running it produces the same keypair.
+Password-derived seeds are **weaker than a random 64-hex seed** — the public
+key is public, so an offline attacker only needs to guess the password. scrypt
+slows guessing, but a short/dictionary password is still crackable. Use a long
+passphrase (12+ chars, ideally several words) and treat `~/.certify/master.seed`
+as secret exactly as before — the password does not protect the file itself.
+
+If a seed already exists `init` asks before overwriting (overwriting changes
+your identity and invalidates all previously issued certs). Non-interactive
+alternatives: `node issue-cert.js init --seed <64-hex>` or `--set` to skip the
+confirmation.
+
+`init` / `derive` reads `~/.certify/master.seed`, derives the signing key, saves
+it to `~/.certify/signing.key`, and writes `certify/public-key.json` into the
+site repo. Both are deterministic — re-running them produces the same keypair.
 
 ## Usage
 
