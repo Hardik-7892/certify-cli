@@ -74,6 +74,17 @@ npm run vendor:build
 - **`--publish`** writes `certify/issued/<id>.json` into the site repo (the
   hosted short URL). The long `?c=` URL needs no commit.
 
+**Which key is used, in order:** `--seed-file` / `--key-file` (mutually
+exclusive — using both is an error) override `--key`. If `--key derived` is
+selected but `~/.certify/signing.key` is missing, the CLI silently falls back
+to deriving from the seed.
+
+All of these are just different ways to load the **same secret**: `signing.key`
+is deterministically derived from `master.seed`, so every option yields the
+identical keypair — unless `--seed-file` points at a *different* seed, which
+produces a different identity that will not verify against the published public
+key (intended only for testing other seeds).
+
 ## Security notes
 
 - The seed never leaves `~/.certify` and never enters any repo.
