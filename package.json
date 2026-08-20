@@ -1,0 +1,17 @@
+{
+  "name": "hardik-pandey-certify-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Developer-only CLI for minting ML-DSA-87 post-quantum certificates. Never shipped; the deployed site remains zero-build and dependency-free.",
+  "type": "commonjs",
+  "scripts": {
+    "vendor:build": "node vendor-build.js"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.7.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "qrcode-generator": "^2.0.4"
+  }
+}
