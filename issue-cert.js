@@ -99,11 +99,36 @@ function loadSigningKey() {
   return Buffer.from(hex, 'hex');
 }
 
-function signKeyFor(source) {
-  if (source === 'master') return deriveKeypair().secretKey;
+function loadSeedHexFrom(file) {
+  const hex = fs.readFileSync(file, 'utf8').trim();
+  if (!/^[0-9a-f]{64}$/i.test(hex)) throw new Error('Invalid seed file ' + file + ' — expected exactly 64 hex chars.');
+  return hex;
+}
+
+function keypairFromSeedHex(hex) {
+  const kid = new Uint8Array(crypto.hkdfSync('sha256', Buffer.from(hex, 'hex'), REPO_SALT, ALG, 32));
+  return ml_dsa87.keygen(kid);
+}
+
+function resolveSigningKey(flags) {
+  if (flags.seedFile) return keypairFromSeedHex(loadSeedHexFrom(flags.seedFile)).secretKey;
+  if (flags.keyFile) {
+    const hex = fs.readFileSync(flags.keyFile, 'utf8').trim();
+    if (!/^[0-9a-f]+$/i.test(hex)) throw new Error('Invalid signing key file ' + flags.keyFile + ' — expected hex.');
+    const buf = Buffer.from(hex, 'hex');
+    if (buf.length !== 4896) throw new Error('Invalid signing key — expected 4896 bytes (' + 9792 + ' hex chars), got ' + buf.length + '.');
+    return buf;
+  }
+  if (flags.key === 'master') return deriveKeypair().secretKey;
   const saved = loadSigningKey();
   if (saved) return saved;
   return deriveKeypair().secretKey;
+}
+
+function keyLabel(flags) {
+  if (flags.seedFile) return 'master seed file';
+  if (flags.keyFile) return 'signing key file';
+  return flags.key === 'master' ? 'master' : 'derived';
 }
 
 function canonicalPayload(claims) {
@@ -112,9 +137,8 @@ function canonicalPayload(claims) {
   return JSON.stringify(o);
 }
 
-function makeCert(claims, keySource) {
+function makeCert(claims, secretKey) {
   const payload = canonicalPayload(claims);
-  const secretKey = signKeyFor(keySource);
   const id = sha256(Buffer.from(payload, 'utf8')).subarray(0, 8).toString('hex');
   const sig = ml_dsa87.sign(Buffer.from(payload, 'utf8'), secretKey);
   return { id, payload, sig, claims };
@@ -154,7 +178,7 @@ function writePublicKey(publicKey) {
 }
 
 function parseFlags(argv) {
-  const flags = { subject: null, claim: null, issuedAt: today(), publish: false, key: 'derived' };
+  const flags = { subject: null, claim: null, issuedAt: today(), publish: false, key: 'derived', seedFile: null, keyFile: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--subject') flags.subject = argv[++i];
@@ -164,6 +188,8 @@ function parseFlags(argv) {
     else if (a === '--file') flags.file = argv[++i];
     else if (a === '--data') flags.data = argv[++i];
     else if (a === '--key') flags.key = argv[++i];
+    else if (a === '--seed-file') flags.seedFile = argv[++i];
+    else if (a === '--key-file') flags.keyFile = argv[++i];
   }
   return flags;
 }
@@ -274,15 +300,19 @@ function cmdDerive() {
 
 function cmdSign(flags) {
   if (!flags.subject || !flags.claim) {
-    console.error('Usage: node scripts/issue-cert.js sign --subject "Name" --claim "Claim text" [--key derived|master] [--issuedAt YYYY-MM-DD] [--publish]');
+    console.error('Usage: node issue-cert.js sign --subject "Name" --claim "Claim text" [--key derived|master] [--seed-file <path> | --key-file <path>] [--issuedAt YYYY-MM-DD] [--publish]');
     process.exit(1);
   }
   if (flags.key !== 'derived' && flags.key !== 'master') {
     console.error('Error: --key must be "derived" (default) or "master".');
     process.exit(1);
   }
+  if (flags.seedFile && flags.keyFile) {
+    console.error('Error: use either --seed-file or --key-file, not both.');
+    process.exit(1);
+  }
   const claims = { v: 1, issuer: ISSUER, issuedAt: flags.issuedAt, subject: flags.subject, claim: flags.claim };
-  const cert = makeCert(claims, flags.key);
+  const cert = makeCert(claims, resolveSigningKey(flags));
   const file = certFile(cert);
   let publishPath = null;
   if (flags.publish) {
@@ -290,7 +320,7 @@ function cmdSign(flags) {
     publishPath = path.join(ISSUED_DIR, cert.id + '.json');
     fs.writeFileSync(publishPath, file + '\n');
   }
-  printCert(cert.id, file, publishPath, flags.key);
+  printCert(cert.id, file, publishPath, keyLabel(flags));
 }
 
 function cmdVerify(flags) {
@@ -326,6 +356,8 @@ async function main() {
       console.log('                            save ~/.certify/signing.key, publish certify/public-key.json');
       console.log('  sign --subject --claim   Mint a certificate (prints JSON + verify URLs)');
       console.log('      [--key derived|master]  Sign with the saved signing key (default) or re-derive from master');
+      console.log('      [--seed-file <path>]     Sign by deriving from the given master seed file');
+      console.log('      [--key-file <path>]      Sign with the given signing key file (4896-byte hex)');
       console.log('      [--issuedAt YYYY-MM-DD]  Issue date (default: today)');
       console.log('      [--publish]              Write certify/issued/<id>.json for the hosted short URL');
       console.log('  verify --file <path>     Check a certificate JSON (id hash + signature)');

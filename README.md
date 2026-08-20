@@ -60,7 +60,7 @@ site repo. Both are deterministic — re-running them produces the same keypair.
 ## Usage
 
 ```sh
-node issue-cert.js sign --subject "Name" --claim "Claim text" [--key derived|master] [--issuedAt YYYY-MM-DD] [--publish]
+node issue-cert.js sign --subject "Name" --claim "Claim text" [--key derived|master] [--seed-file <path> | --key-file <path>] [--issuedAt YYYY-MM-DD] [--publish]
 node issue-cert.js verify --file <path>          # or: --data "<json>"
 node check-sri.js
 npm run vendor:build
@@ -69,6 +69,8 @@ npm run vendor:build
 - **`--key derived`** (default) signs with the saved `~/.certify/signing.key`;
   **`--key master`** re-derives from the seed. Both produce certificates the
   same public key verifies.
+- **`--seed-file <path>`** / **`--key-file <path>`** sign using an explicit key
+  file (a 64-hex seed or a 4896-byte signing key) instead of the defaults.
 - **`--publish`** writes `certify/issued/<id>.json` into the site repo (the
   hosted short URL). The long `?c=` URL needs no commit.
 
